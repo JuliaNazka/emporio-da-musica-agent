@@ -29,7 +29,9 @@ RETURN_POLICY_SECTIONS = ["4.1", "4.2", "4.3", "4.4", "8.1"]
 STORE_WHATSAPP = "(67) 3321-4500"  # policy 7
 STORE_EMAIL = "contato@emporiodamusica.com.br"
 COMPLAINT_RESPONSE_TIME = "até 24 horas úteis"  # policy 7.3
-DEFAULT_RESPONSE_TIME = "no próximo horário de atendimento"
+OPEN_RESPONSE_TIME = "ainda hoje, durante o expediente"
+CLOSED_RESPONSE_TIME = "a partir da próxima abertura da loja"
+COMPLAINT_REASONS = frozenset({"complaint", "defect"})
 ESCALATION_REASONS = {
     "complaint": "reclamação",
     "defect": "produto com defeito",
@@ -269,7 +271,10 @@ def escalate_to_human(reason: str, summary: str, now: datetime | None = None) ->
         return {"escalated": False, "message": f"Unknown reason. Use one of: {', '.join(ESCALATION_REASONS)}."}
     now = now or datetime.now(rules.STORE_TZ)
     store = rules.store_status(now)
-    response_time = COMPLAINT_RESPONSE_TIME if reason == "complaint" else DEFAULT_RESPONSE_TIME
+    if reason in COMPLAINT_REASONS:
+        response_time = COMPLAINT_RESPONSE_TIME
+    else:
+        response_time = OPEN_RESPONSE_TIME if store["open_now"] else CLOSED_RESPONSE_TIME
     return {
         "escalated": True,
         "reason": reason,

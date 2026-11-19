@@ -113,6 +113,12 @@ def test_escalation_outside_hours_gives_next_opening():
     ticket = tools.escalate_to_human("customer_request", "Quer falar com um vendedor", now=sunday)
     assert not ticket["team_available_now"]
     assert ticket["next_opening"] == "2026-11-23 09:00"
+    assert ticket["response_time"] == tools.CLOSED_RESPONSE_TIME
+
+
+def test_defect_is_handled_like_a_complaint():
+    ticket = tools.escalate_to_human("defect", "Tampo trincado")
+    assert ticket["response_time"] == tools.COMPLAINT_RESPONSE_TIME
 
 
 def test_escalation_rejects_unknown_reason():
