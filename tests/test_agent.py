@@ -158,3 +158,16 @@ def test_tools_use_the_agent_clock(data, index):
     sunday = datetime(2026, 11, 22, 10, 0, tzinfo=rules.STORE_TZ)
     store_status = next(t for t in build_tools(data, index, lambda: sunday) if t.name == "get_store_status")
     assert '"open_now": false' in store_status.invoke({})
+
+
+def test_customer_budget_can_be_repeated_in_the_answer():
+    result = ['{"total_found": 0, "cheapest_above_max_price": [{"list_price": 549.0, "pix_price": 521.55}]}']
+    answer = "Até R$ 500 não temos violão de aço. O mais barato é R$ 549,00 (R$ 521,55 no PIX)."
+    assert unsupported_prices(answer, result, customer_text="e se for de aço, até R$ 500?") == []
+    assert unsupported_prices(answer, result) == [500.0]
+
+
+def test_saying_what_the_store_has_needs_a_lookup():
+    assert needs_grounding("Não temos telecaster no nosso catálogo.", tools_used=set())
+    assert needs_grounding("Temos a Fender Telecaster Player Series!", tools_used={"search_policies"})
+    assert not needs_grounding("Não temos guitarra rosa.", tools_used={"search_products"}, tool_results=[])

@@ -59,6 +59,11 @@ def _matches(query: str, search_text: str) -> bool:
     return all(t in text_tokens or t.replace("-", "") in joined for t in _tokens(query))
 
 
+def _where_matches(products: pd.DataFrame, column: str, query: str) -> pd.DataFrame:
+    # astype(bool) keeps the mask boolean even when products is already empty.
+    return products[products[column].map(lambda text: _matches(query, text)).astype(bool)]
+
+
 def _active_promo(data: StoreData, product_id: int) -> float | None:
     promo = data.active_promotions[data.active_promotions["product_id"] == product_id]
     return float(promo.iloc[0]["discount_percent"]) if not promo.empty else None
@@ -108,9 +113,9 @@ def search_products(
     """Price filters use the price the customer pays by card."""
     products = data.products
     if query:
-        products = products[products["search_text"].map(lambda text: _matches(query, text))]
+        products = _where_matches(products, "search_text", query)
     if category:
-        products = products[products["category_name"].map(lambda name: _matches(category, name))]
+        products = _where_matches(products, "category_name", category)
     if in_stock_only:
         products = products[_in_stock(products)]
 
@@ -120,7 +125,11 @@ def search_products(
     if max_price is not None:
         results = [p for p in results if _card_price(p) <= max_price]
     results.sort(key=_card_price)
-    return {"total_found": len(results), "products": results[:MAX_RESULTS]}
+    response = {"total_found": len(results), "products": results[:MAX_RESULTS]}
+    if not results and max_price is not None:
+        above = search_products(data, query, category, min_price, None, in_stock_only)["products"]
+        response["cheapest_above_max_price"] = above[:MAX_ALTERNATIVES]
+    return response
 
 
 def _find_product(data: StoreData, name_or_id: str) -> pd.Series | None:
@@ -128,7 +137,7 @@ def _find_product(data: StoreData, name_or_id: str) -> pd.Series | None:
     if str(name_or_id).strip().isdigit():
         hit = products[products["product_id"] == int(name_or_id)]
         return hit.iloc[0] if not hit.empty else None
-    matched = products[products["search_text"].map(lambda text: _matches(name_or_id, text))]
+    matched = _where_matches(products, "search_text", name_or_id)
     if not matched.empty:
         return matched.iloc[0]
     query = normalize_text(name_or_id)

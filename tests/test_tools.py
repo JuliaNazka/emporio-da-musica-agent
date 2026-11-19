@@ -123,3 +123,15 @@ def test_defect_is_handled_like_a_complaint():
 
 def test_escalation_rejects_unknown_reason():
     assert not tools.escalate_to_human("bored", "?")["escalated"]
+
+
+def test_empty_search_within_budget_shows_the_cheapest_above_it(data):
+    result = tools.search_products(data, query="violão aço", max_price=500)
+    assert result["total_found"] == 0
+    cheapest = result["cheapest_above_max_price"]
+    assert cheapest[0]["name"] == "Shelby SN-100 Folk Aço Preto"
+    assert all(p["list_price"] > 500 for p in cheapest)
+
+
+def test_search_with_no_word_match_and_a_category_returns_nothing(data):
+    assert tools.search_products(data, query="xyzzy", category="violões")["total_found"] == 0

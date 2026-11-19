@@ -189,7 +189,9 @@ def build_agent(
         tools_used = {m.name for m in tool_messages}
         retries = sum(isinstance(m, HumanMessage) for m in turn)
 
-        if needs_grounding(answer.text, tools_used, [m.text for m in tool_messages]):
+        tool_args = [_as_json(c["args"]) for m in turn if isinstance(m, AIMessage) for c in m.tool_calls]
+        tool_results = [m.text for m in tool_messages] + tool_args
+        if needs_grounding(answer.text, tools_used, tool_results, customer_text):
             if retries < MAX_RETRIES:
                 return {"messages": [RemoveMessage(id=answer.id), HumanMessage(GROUNDING_REMINDER)]}
             return {"messages": [RemoveMessage(id=answer.id), AIMessage(FALLBACK_ANSWER)]}
