@@ -8,3 +8,8 @@ __pycache__/
 
 *.sqlite
 *.db
+
+traces.jsonl
+
+*.sqlite-*
+*.egg-info/
