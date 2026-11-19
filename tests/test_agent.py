@@ -5,9 +5,9 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from emporio import rules
-from emporio.agent import FALLBACK_ANSWER, build_agent, build_tools
+from emporio.agent import FALLBACK_ANSWER, build_agent, build_tools, model_settings
 from emporio.data import load_store_data
-from emporio.grounding import GROUNDING_REMINDER, needs_grounding
+from emporio.grounding import GROUNDING_REMINDER, needs_grounding, unsupported_prices
 from emporio.policies import PolicyIndex
 from emporio.prompts import system_prompt
 
@@ -100,3 +100,23 @@ def test_grounding_rule():
 def test_system_prompt_knows_when_the_store_is_closed():
     sunday = datetime(2026, 11, 22, 10, 0, tzinfo=rules.STORE_TZ)
     assert "closed, next opening 2026-11-23 09:00" in system_prompt(sunday)
+
+
+def test_local_models_skip_reasoning_and_get_a_larger_context():
+    assert model_settings("google_genai:gemini-3.8-flash") == {"temperature": 0}
+    local = model_settings("ollama:qwen3:4b-instruct")
+    assert local["reasoning"] is False
+    assert local["num_ctx"] >= 8192
+
+
+def test_prices_must_match_the_tool_results():
+    result = ['{"list_price": 2199.0, "pix_price": 2089.05, "value": 183.25}']
+    assert unsupported_prices("No PIX fica R$ 2.089,05, ou 12x de R$ 183,25.", result) == []
+    assert unsupported_prices("Sai por R$ 2,089.05 ou R$ 2.199", result) == []
+    assert unsupported_prices("O preço atual é R$ 3.999,00.", result) == [3999.0]
+
+
+def test_invented_price_after_a_tool_call_is_caught():
+    result = ['{"promotions": [{"product_id": 90, "list_price": 1299.0}]}']
+    assert needs_grounding("Custa R$ 3.999,00.", {"list_active_promotions"}, result)
+    assert not needs_grounding("Custa R$ 1.299,00.", {"list_active_promotions"}, result)

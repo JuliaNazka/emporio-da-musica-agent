@@ -24,6 +24,8 @@ from emporio.prompts import system_prompt
 
 ENV_FILE = DEFAULT_DATA_DIR.parent / ".env"
 DEFAULT_MODEL = "google_genai:gemini-3.8-flash"
+# Local models: skip the hidden reasoning step and leave room for the prompt plus 10 tool schemas.
+OLLAMA_SETTINGS = {"reasoning": False, "num_ctx": 8192}
 MAX_GROUNDING_RETRIES = 1
 FALLBACK_ANSWER = (
     "Não consegui confirmar essa informação no sistema agora. Posso verificar de novo, "
@@ -113,10 +115,18 @@ def build_tools(data: StoreData, index: PolicyIndex) -> list[BaseTool]:
     ]
 
 
+def model_settings(model_name: str) -> dict:
+    settings = {"temperature": 0}
+    if model_name.startswith("ollama:"):
+        settings.update(OLLAMA_SETTINGS)
+    return settings
+
+
 def load_model() -> BaseChatModel:
     # The project's .env wins over API keys set elsewhere on the machine.
     load_dotenv(ENV_FILE, override=True)
-    return init_chat_model(os.getenv("LLM_MODEL") or DEFAULT_MODEL, temperature=0)
+    model_name = os.getenv("LLM_MODEL") or DEFAULT_MODEL
+    return init_chat_model(model_name, **model_settings(model_name))
 
 
 def _current_turn(messages: list[BaseMessage]) -> list[BaseMessage]:
@@ -152,8 +162,10 @@ def build_agent(
     def grounding_check(state: MessagesState) -> dict:
         turn = _current_turn(state["messages"])
         answer = turn[0]
-        tools_used = {m.name for m in turn if isinstance(m, ToolMessage)}
-        if not needs_grounding(answer.text, tools_used):
+        tool_messages = [m for m in turn if isinstance(m, ToolMessage)]
+        tools_used = {m.name for m in tool_messages}
+        tool_results = [m.text for m in tool_messages]
+        if not needs_grounding(answer.text, tools_used, tool_results):
             return {}
         retries = sum(isinstance(m, HumanMessage) for m in turn)
         if retries < MAX_GROUNDING_RETRIES:
