@@ -1,4 +1,4 @@
-"""LangGraph tool-calling agent: model -> tools -> model, with a grounding check before each reply."""
+"""LangGraph tool-calling agent: model -> tools -> model, with a review of each reply (grounding and hand-off) before it is sent."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import os
 from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
@@ -18,6 +19,7 @@ from langgraph.prebuilt import ToolNode
 
 from emporio import policies, rules, tools
 from emporio.data import DEFAULT_DATA_DIR, StoreData, load_store_data
+from emporio.escalation import ESCALATION_REMINDER, ESCALATION_TOOL, escalation_reason, handoff_answer, needs_escalation
 from emporio.grounding import GROUNDING_REMINDER, needs_grounding
 from emporio.policies import PolicyIndex
 from emporio.prompts import system_prompt
@@ -26,7 +28,8 @@ ENV_FILE = DEFAULT_DATA_DIR.parent / ".env"
 DEFAULT_MODEL = "google_genai:gemini-3.8-flash"
 # Local models: skip the hidden reasoning step and leave room for the prompt plus 10 tool schemas.
 OLLAMA_SETTINGS = {"reasoning": False, "num_ctx": 8192}
-MAX_GROUNDING_RETRIES = 1
+MAX_RETRIES = 1
+INTERNAL_REMINDERS = frozenset({GROUNDING_REMINDER, ESCALATION_REMINDER})
 FALLBACK_ANSWER = (
     "Não consegui confirmar essa informação no sistema agora. Posso verificar de novo, "
     "ou, se preferir, falar com a nossa equipe pelo WhatsApp " + tools.STORE_WHATSAPP + "."
@@ -38,7 +41,11 @@ def _as_json(result: dict) -> str:
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
-def build_tools(data: StoreData, index: PolicyIndex) -> list[BaseTool]:
+def _store_now() -> datetime:
+    return datetime.now(rules.STORE_TZ)
+
+
+def build_tools(data: StoreData, index: PolicyIndex, clock: Callable[[], datetime] = _store_now) -> list[BaseTool]:
     @tool
     def search_products(
         query: str | None = None,
@@ -72,7 +79,7 @@ def build_tools(data: StoreData, index: PolicyIndex) -> list[BaseTool]:
     def check_return_options(order_id: int, phone_or_email: str) -> str:
         """Which return, exchange and warranty windows are still open for an order. Needs the order
         number and the phone or e-mail used in the purchase."""
-        return _as_json(tools.check_return_options(data, order_id, phone_or_email))
+        return _as_json(tools.check_return_options(data, order_id, phone_or_email, today=clock().date()))
 
     @tool
     def get_installment_options(amount: float) -> str:
@@ -87,7 +94,7 @@ def build_tools(data: StoreData, index: PolicyIndex) -> list[BaseTool]:
     @tool
     def get_store_status() -> str:
         """Whether the store is open right now and when it opens next."""
-        return _as_json(tools.get_store_status())
+        return _as_json(tools.get_store_status(clock()))
 
     @tool
     def search_policies(question: str) -> str:
@@ -99,7 +106,7 @@ def build_tools(data: StoreData, index: PolicyIndex) -> list[BaseTool]:
     def escalate_to_human(reason: EscalationReason, summary: str) -> str:
         """Hand the conversation to the store team. Use for complaints, defects, requests to talk to
         a person, questions the manual does not cover, or problems you could not solve."""
-        return _as_json(tools.escalate_to_human(reason, summary))
+        return _as_json(tools.escalate_to_human(reason, summary, now=clock()))
 
     return [
         search_products,
@@ -129,14 +136,18 @@ def load_model() -> BaseChatModel:
     return init_chat_model(model_name, **model_settings(model_name))
 
 
-def _current_turn(messages: list[BaseMessage]) -> list[BaseMessage]:
-    """Messages after the customer's last message, newest first."""
+def _is_customer(message: BaseMessage) -> bool:
+    return isinstance(message, HumanMessage) and message.content not in INTERNAL_REMINDERS
+
+
+def _current_turn(messages: list[BaseMessage]) -> tuple[HumanMessage | None, list[BaseMessage]]:
+    """The customer's last message and everything after it, newest first."""
     turn = []
     for message in reversed(messages):
-        if isinstance(message, HumanMessage) and message.content != GROUNDING_REMINDER:
-            break
+        if _is_customer(message):
+            return message, turn
         turn.append(message)
-    return turn
+    return None, turn
 
 
 def build_agent(
@@ -148,8 +159,8 @@ def build_agent(
 ):
     data = data if data is not None else load_store_data()
     index = index if index is not None else PolicyIndex.from_pdf()
-    clock = clock or (lambda: datetime.now(rules.STORE_TZ))
-    agent_tools = build_tools(data, index)
+    clock = clock or _store_now
+    agent_tools = build_tools(data, index, clock)
     llm = (model or load_model()).bind_tools(agent_tools)
 
     def call_model(state: MessagesState) -> dict:
@@ -157,20 +168,36 @@ def build_agent(
         return {"messages": [llm.invoke([prompt, *state["messages"]])]}
 
     def route_after_model(state: MessagesState) -> str:
-        return "tools" if state["messages"][-1].tool_calls else "grounding_check"
+        return "tools" if state["messages"][-1].tool_calls else "review_reply"
 
-    def grounding_check(state: MessagesState) -> dict:
-        turn = _current_turn(state["messages"])
+    def hand_off(customer_text: str) -> list[BaseMessage]:
+        """Escalate in code when the model would not, and tell the customer what happens next."""
+        args = {"reason": escalation_reason(customer_text), "summary": customer_text}
+        ticket = tools.escalate_to_human(**args, now=clock())
+        call_id = f"guard-{uuid4().hex[:8]}"
+        return [
+            AIMessage(content="", tool_calls=[{"name": ESCALATION_TOOL, "args": args, "id": call_id}]),
+            ToolMessage(_as_json(ticket), tool_call_id=call_id, name=ESCALATION_TOOL),
+            AIMessage(handoff_answer(ticket)),
+        ]
+
+    def review_reply(state: MessagesState) -> dict:
+        customer, turn = _current_turn(state["messages"])
+        customer_text = customer.text if customer else ""
         answer = turn[0]
         tool_messages = [m for m in turn if isinstance(m, ToolMessage)]
         tools_used = {m.name for m in tool_messages}
-        tool_results = [m.text for m in tool_messages]
-        if not needs_grounding(answer.text, tools_used, tool_results):
-            return {}
         retries = sum(isinstance(m, HumanMessage) for m in turn)
-        if retries < MAX_GROUNDING_RETRIES:
-            return {"messages": [RemoveMessage(id=answer.id), HumanMessage(GROUNDING_REMINDER)]}
-        return {"messages": [RemoveMessage(id=answer.id), AIMessage(FALLBACK_ANSWER)]}
+
+        if needs_grounding(answer.text, tools_used, [m.text for m in tool_messages]):
+            if retries < MAX_RETRIES:
+                return {"messages": [RemoveMessage(id=answer.id), HumanMessage(GROUNDING_REMINDER)]}
+            return {"messages": [RemoveMessage(id=answer.id), AIMessage(FALLBACK_ANSWER)]}
+        if needs_escalation(customer_text, tools_used):
+            if retries < MAX_RETRIES:
+                return {"messages": [RemoveMessage(id=answer.id), HumanMessage(ESCALATION_REMINDER)]}
+            return {"messages": [RemoveMessage(id=answer.id), *hand_off(customer_text)]}
+        return {}
 
     def route_after_check(state: MessagesState) -> str:
         return "agent" if isinstance(state["messages"][-1], HumanMessage) else END
@@ -178,9 +205,9 @@ def build_agent(
     graph = StateGraph(MessagesState)
     graph.add_node("agent", call_model)
     graph.add_node("tools", ToolNode(agent_tools))
-    graph.add_node("grounding_check", grounding_check)
+    graph.add_node("review_reply", review_reply)
     graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", route_after_model, ["tools", "grounding_check"])
+    graph.add_conditional_edges("agent", route_after_model, ["tools", "review_reply"])
     graph.add_edge("tools", "agent")
-    graph.add_conditional_edges("grounding_check", route_after_check, ["agent", END])
+    graph.add_conditional_edges("review_reply", route_after_check, ["agent", END])
     return graph.compile(checkpointer=checkpointer)

@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from emporio import rules
 from emporio.agent import FALLBACK_ANSWER, build_agent, build_tools, model_settings
 from emporio.data import load_store_data
+from emporio.escalation import ESCALATION_REMINDER, escalation_reason, needs_escalation
 from emporio.grounding import GROUNDING_REMINDER, needs_grounding, unsupported_prices
 from emporio.policies import PolicyIndex
 from emporio.prompts import system_prompt
@@ -120,3 +121,40 @@ def test_invented_price_after_a_tool_call_is_caught():
     result = ['{"promotions": [{"product_id": 90, "list_price": 1299.0}]}']
     assert needs_grounding("Custa R$ 3.999,00.", {"list_active_promotions"}, result)
     assert not needs_grounding("Custa R$ 1.299,00.", {"list_active_promotions"}, result)
+
+
+COMPLAINT = "O violão do pedido 5 chegou com o tampo trincado, quero trocar!"
+
+
+def test_defect_without_escalation_gets_a_second_chance(data, index):
+    messages = run(data, index, [
+        AIMessage("Que pena! O prazo de troca já passou."),
+        tool_call("escalate_to_human", {"reason": "defect", "summary": "Tampo trincado no pedido 5"}),
+        AIMessage("Passei para a equipe, que responde em até 24 horas úteis pelo WhatsApp (67) 3321-4500."),
+    ], question=COMPLAINT)
+    contents = [m.content for m in messages]
+    assert ESCALATION_REMINDER in contents
+    assert "Que pena! O prazo de troca já passou." not in contents
+    assert messages[-1].content.startswith("Passei para a equipe")
+
+
+def test_code_escalates_when_the_model_insists_on_answering_alone(data, index):
+    messages = run(data, index, [AIMessage("Não dá mais para trocar."), AIMessage("Infelizmente não.")], question=COMPLAINT)
+    ticket = next(m for m in messages if isinstance(m, ToolMessage) and m.name == "escalate_to_human")
+    assert '"reason": "defect"' in ticket.content
+    assert "24 horas úteis" in messages[-1].content
+    assert "(67) 3321-4500" in messages[-1].content
+
+
+def test_escalation_reasons():
+    assert escalation_reason("chegou quebrado") == "defect"
+    assert escalation_reason("quero falar com um atendente") == "customer_request"
+    assert escalation_reason("vou reclamar no procon") == "complaint"
+    assert escalation_reason("quanto custa o violão?") is None
+    assert not needs_escalation("chegou quebrado", {"escalate_to_human"})
+
+
+def test_tools_use_the_agent_clock(data, index):
+    sunday = datetime(2026, 11, 22, 10, 0, tzinfo=rules.STORE_TZ)
+    store_status = next(t for t in build_tools(data, index, lambda: sunday) if t.name == "get_store_status")
+    assert '"open_now": false' in store_status.invoke({})
