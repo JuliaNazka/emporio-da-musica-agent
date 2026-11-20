@@ -25,10 +25,17 @@ CATALOG = re.compile(
     r"\b(n[aã]o temos|temos (o|a|os|as|um|uma)|cat[aá]logo|dispon[ií]ve(l|is)|we (do not|don't) (have|sell))\b",
     re.IGNORECASE,
 )
+# Delivery times come from get_shipping_quote, an order lookup or the policy manual, never from memory.
+DELIVERY = re.compile(
+    r"\b(dias? [uú]t(il|eis)|business days?|prazo de entrega|delivery (time|takes)|(chega|entrega\w*) em \d+)\b",
+    re.IGNORECASE,
+)
+DELIVERY_TOOLS = DATA_TOOLS | {"search_policies"}
 GROUNDING_REMINDER = (
-    "[internal check] Your last answer stated prices, stock or what the store sells without a matching "
-    "store data tool result in this turn. Call search_products or get_product_details first, then answer "
-    "using only what it returns."
+    "[internal check] Your last answer stated prices, stock, delivery times or what the store sells without "
+    "a matching tool result in this turn. Call the tool that has that data first (search_products or "
+    "get_product_details for products, get_shipping_quote for delivery), then answer using only what it "
+    "returns, in the customer's language."
 )
 
 
@@ -46,18 +53,24 @@ def _to_number(raw: str) -> float:
     return float(re.sub(r"[.,]", "", whole) + "." + cents)
 
 
+def prices_in(text: str) -> list[float]:
+    return [_to_number(m) for m in PRICE_VALUE.findall(text)]
+
+
 def unsupported_prices(answer: str, tool_results: list[str], customer_text: str = "") -> list[float]:
     """Prices in the answer that come neither from this turn's tools nor from the customer (e.g. a budget)."""
     known = {float(n) for result in tool_results for n in NUMBER.findall(result)}
-    known |= {_to_number(m) for m in PRICE_VALUE.findall(customer_text)}
+    known |= set(prices_in(customer_text))
     known |= {float(n) for n in NUMBER.findall(customer_text)}
-    stated = [_to_number(m) for m in PRICE_VALUE.findall(answer)]
+    stated = prices_in(answer)
     return [p for p in stated if not any(abs(p - k) <= PRICE_TOLERANCE for k in known)]
 
 
 def needs_grounding(
     answer: str, tools_used: set[str], tool_results: list[str] | None = None, customer_text: str = ""
 ) -> bool:
+    if DELIVERY.search(answer) and not tools_used & DELIVERY_TOOLS:
+        return True
     if not mentions_store_data(answer):
         return False
     if not tools_used & DATA_TOOLS:

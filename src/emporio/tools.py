@@ -266,7 +266,7 @@ def get_installment_options(amount: float) -> dict:
     }
 
 
-def get_shipping_quote(city: str, amount: float) -> dict:
+def get_shipping_quote(city: str, amount: float | None = None) -> dict:
     return rules.shipping_quote(city, amount)
 
 

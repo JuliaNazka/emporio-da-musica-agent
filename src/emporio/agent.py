@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable
 from datetime import datetime
@@ -24,6 +25,7 @@ from emporio.grounding import GROUNDING_REMINDER, needs_grounding
 from emporio.policies import PolicyIndex
 from emporio.prompts import system_prompt
 
+logger = logging.getLogger(__name__)
 ENV_FILE = DEFAULT_DATA_DIR.parent / ".env"
 DEFAULT_MODEL = "google_genai:gemini-3.8-flash"
 # Local models: skip the hidden reasoning step and leave room for the prompt plus 10 tool schemas.
@@ -87,8 +89,9 @@ def build_tools(data: StoreData, index: PolicyIndex, clock: Callable[[], datetim
         return _as_json(tools.get_installment_options(amount))
 
     @tool
-    def get_shipping_quote(city: str, amount: float) -> str:
-        """Shipping fee and delivery time for a destination city and purchase amount in BRL."""
+    def get_shipping_quote(city: str, amount: float | None = None) -> str:
+        """Shipping fee and delivery time to a destination city (any city in Brazil). The purchase
+        amount in BRL is optional: it only changes the fee in Campo Grande."""
         return _as_json(tools.get_shipping_quote(city, amount))
 
     @tool
@@ -165,7 +168,13 @@ def build_agent(
 
     def call_model(state: MessagesState) -> dict:
         prompt = SystemMessage(system_prompt(clock()))
-        return {"messages": [llm.invoke([prompt, *state["messages"]])]}
+        try:
+            return {"messages": [llm.invoke([prompt, *state["messages"]])]}
+        except Exception:
+            # e.g. a local model emitting a tool call with broken JSON: the customer gets the safe reply,
+            # and the review step can still hand the case to the team.
+            logger.exception("Model call failed")
+            return {"messages": [AIMessage(FALLBACK_ANSWER)]}
 
     def route_after_model(state: MessagesState) -> str:
         return "tools" if state["messages"][-1].tool_calls else "review_reply"

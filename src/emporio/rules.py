@@ -68,12 +68,14 @@ def can_split_payment(amount: float) -> bool:
     return amount > SPLIT_PAYMENT_THRESHOLD
 
 
-def shipping_quote(city: str, amount: float) -> dict:
+def shipping_quote(city: str, amount: float | None = None) -> dict:
+    """Without an amount the metro fee is the standard one, with the free-shipping threshold alongside."""
     if city.strip().lower() == METRO_CITY:
-        fee = 0.0 if amount > FREE_SHIPPING_ABOVE else METRO_SHIPPING_FEE
+        fee = 0.0 if amount is not None and amount > FREE_SHIPPING_ABOVE else METRO_SHIPPING_FEE
         return {
             "region": "metro",
             "fee": fee,
+            "free_shipping_above": FREE_SHIPPING_ABOVE,
             "delivery_days": "1 a 3 dias úteis",
             "carrier": "motoboy próprio",
         }

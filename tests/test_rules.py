@@ -42,6 +42,12 @@ def test_metro_shipping_is_free_above_500():
     assert rules.shipping_quote("Campo Grande", 500)["fee"] == 35.0
 
 
+def test_shipping_quote_without_amount_still_gives_delivery_time():
+    quote = rules.shipping_quote("Campo Grande")
+    assert (quote["fee"], quote["free_shipping_above"], quote["delivery_days"]) == (35.0, 500.0, "1 a 3 dias úteis")
+    assert rules.shipping_quote("São Paulo")["options"]["SEDEX"] == "2 a 5 dias úteis"
+
+
 def test_other_cities_have_no_fixed_fee():
     assert rules.shipping_quote("Dourados", 600)["fee"] is None
 

@@ -12,9 +12,12 @@ DEFECT = re.compile(
     r"n[aã]o (funciona|liga)|broken|cracked|defect\w*)\b",
     re.IGNORECASE,
 )
+# Only a request for a person counts: "sou o gerente" or "você é atendente" must not open a ticket.
 PERSON = re.compile(
-    r"\b(atendente|gerente|falar com (um|uma|algu[eé]m|humano|pessoa|vendedor)\w*|"
-    r"speak to (a )?(person|human))\b",
+    r"\b(falar com|chamar?|quero|preciso( de)?|passar? (para|pra)|transferir? (para|pra))\s+"
+    r"(o |a |um |uma |algum |alguma )?(atendente|gerente|humano|pessoa|vendedor|algu[eé]m|respons[aá]vel)\b"
+    r"|\batendimento humano\b"
+    r"|\b(speak|talk) (to|with) (a |an |the )?(person|human|manager|agent)\b",
     re.IGNORECASE,
 )
 COMPLAINT = re.compile(r"\b(reclama\w*|procon|absurdo|insatisfeit\w*|complain\w*)\b", re.IGNORECASE)
