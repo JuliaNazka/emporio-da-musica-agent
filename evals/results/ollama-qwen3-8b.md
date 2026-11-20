@@ -1,6 +1,6 @@
 # Evaluation: `ollama:qwen3:8b`
 
-Run on 2026-11-20 12:53, store clock fixed at Wednesday 2026-11-18 15:00 (open).
+Run on 2026-11-20 19:06, store clock fixed at Wednesday 2026-11-18 15:00 (open).
 31 cases, 33 customer messages. Every check is deterministic (see `evals/cases.json`).
 
 ## KPIs
@@ -9,8 +9,8 @@ Run on 2026-11-20 12:53, store clock fixed at Wednesday 2026-11-18 15:00 (open).
 - **Accuracy (cases with every check passed):** 67.7%
 - **Resolved without a human:** 93.5%
 - **Hand-off rate:** 6.5% (expected hand-offs done: 2/2, done by the code guard: 0)
-- **Fallback answers (unconfirmed data or model error):** 0, review retries: 2
-- **Average time per message:** 19.7 s
+- **Fallback answers (unconfirmed data or model error):** 0, review retries: 3
+- **Average time per message:** 20.6 s
 
 ## By group
 

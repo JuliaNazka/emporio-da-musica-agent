@@ -39,7 +39,8 @@ How I would measure whether the agent helps the store, with the prototype's scor
 - **Rules respected:** share of all checks passed. 80% (4b) and 81% (8b).
 - **Invented prices:** target zero. Zero on both models: no expired or made-up discount reached the customer
   in 16 price checks.
-- **Time per message:** 16 s (4b) and 20 s (8b) on a laptop GPU. A hosted model would be much faster.
+- **Time per message:** about 20 s on a laptop GPU (16 to 21 s for the 4b and 20 to 21 s for the 8b across runs).
+  A hosted model would be much faster.
 
 In production the same numbers come from the real conversation traces, together with customer satisfaction
 after the chat and the team's time saved.
@@ -79,7 +80,7 @@ Type `sair` to leave. Conversations are kept in `memory.sqlite`, and every turn 
 **Tests and evaluation:**
 
 ```bash
-pytest                                                         # 89 tests, no model needed
+pytest                                                         # 98 tests, no model needed
 python scripts/run_eval.py --model ollama:qwen3:4b-instruct    # full evaluation, about 10 min
 python scripts/run_eval.py --model ollama:qwen3:4b-instruct --only order-status wrong-phone
 ```
@@ -104,8 +105,8 @@ flowchart LR
   shipping, return windows and opening hours are computed in code, never by the model.
 - **Policies** (`policies.py`): the PDF is split by section and searched with BM25. Answers cite the section.
 - **Review step** (`grounding.py`, `escalation.py`): checks every reply before it is sent. A price must match
-  a tool result, stock and delivery times need a lookup, and complaints, defects or requests for a person
-  must reach `escalate_to_human`. The model gets one retry; after that the code sends a safe reply or opens
+  a tool result (product data or the manual), stock and delivery times need a lookup, and complaints, defects
+  or requests for a person must reach `escalate_to_human`. The model gets one retry; after that the code sends a safe reply or opens
   the ticket itself.
 - **Memory and traces** (`cli.py`, `tracing.py`): SQLite checkpoints per conversation and one JSON line per turn.
 
@@ -142,8 +143,8 @@ Flash, but the free tier allows about 20 requests a day per model, and one custo
 model calls. I moved to Ollama: free, no customer data leaves the machine, and it runs on a laptop GPU
 (RTX 3050, 4 GB). I compared two sizes on the same evaluation:
 
-- `qwen3:4b-instruct` (default): 58% accuracy, 16 s per message.
-- `qwen3:8b`: 68% accuracy, 20 s per message, fewer fallbacks, but needs more memory.
+- `qwen3:4b-instruct` (default): 58% accuracy, 16 to 21 s per message.
+- `qwen3:8b`: 68% accuracy, 20 to 21 s per message, fewer fallbacks, but needs more memory.
 
 Both run with temperature 0, the hidden reasoning step off and an 8k context. For production I would run the
 same evaluation on hosted models (for example Gemini Flash or Claude Haiku) and pick by score, cost and
@@ -156,11 +157,20 @@ installment plans, open return windows), so the model copies values instead of c
 
 **Rules that matter most are enforced in code, not only in the prompt.** Small models follow most rules,
 but not always, and the expensive mistakes are an invented price and a complaint that never reaches the team.
-So a review node checks every reply: prices must match a tool result from the same turn, stock, catalog and
-delivery-time statements need a lookup, and complaints, defects and requests for a person must call
-`escalate_to_human`. The model gets one retry with an internal reminder; if it fails again, the customer gets
-a safe reply, or the code opens the ticket itself. A model error (for example a tool call with broken JSON)
-also ends in the safe reply instead of a crash.
+So a review node checks every reply. Each kind of claim has the tools that can back it: a price must match a
+number from the product data or the manual in the same turn, stock and "we have this product" need a catalog
+lookup, "we don't sell strings" can also come from the manual, and delivery times need the shipping quote, an
+order or the manual. Complaints, defects and requests for a person must call `escalate_to_human`; a defect
+mentioned in a question ("se tiver defeito, qual a garantia?") or a denial ("não tem defeito") does not count.
+The model gets one retry with an internal reminder; if it fails again, the customer gets a safe reply, or the
+code opens the ticket itself (a complaint always reaches the team, even when the answer also failed the price
+check). A model error (for example a tool call with broken JSON) also ends in the safe reply instead of a crash.
+
+**Tools protect the data on their own.** The order tools need the order number plus the phone or e-mail, and
+lock after 3 failed checks in a conversation, because order numbers are sequential and easy to guess. Product
+details return the list of candidates when a name fits several products ("Yamaha"), prefer whole-word matches
+("Martin D-28" is not the D-28E) and flag a match found only by a similar name, so the model asks instead of
+quoting the wrong instrument.
 
 **Interface: terminal chat.** The case asks for the agent working correctly, so I kept the interface simple
 (`rich` for formatting). The graph does not depend on it: an API or a WhatsApp webhook would call the same
@@ -205,7 +215,8 @@ The case says to assume a reasonable reading and document it. These are the ones
   estimated delivery date. The 7-day windows (4.1, 4.3) and the 90-day legal warranty (8.1) count from receipt;
   the 30-day defect exchange (4.2) counts from purchase.
 - **Order verification (LGPD).** An order is shown only when the phone (last 8 digits) or the e-mail matches the
-  customer on that order. On a mismatch the agent does not say which part was wrong.
+  customer on that order. On a mismatch the agent does not say which part was wrong. After 3 failed checks in a
+  conversation, order lookups stop and the customer is sent to the WhatsApp channel.
 - **Hand-off.** `escalate_to_human` creates a ticket record and tells the customer the response time: 24 business
   hours for complaints and defects (7.3); for other requests, still today during business hours or from the next
   opening. In the prototype nothing is sent to a real team.
@@ -236,7 +247,7 @@ be repeated and compared. The store clock is fixed on a Wednesday at 15:00 (stor
 | Resolved without a human | 77.4% | 93.5% |
 | Expected hand-offs done | 2/2 | 2/2 |
 | Fallback answers | 5 | 0 |
-| Seconds per message | 15.8 | 19.7 |
+| Seconds per message | 21.3 | 20.6 |
 | Happy path | 6/11 | 8/11 |
 | Expired promotion | 2/5 | 0/5 |
 | LGPD | 5/5 | 5/5 |
@@ -246,6 +257,13 @@ be repeated and compared. The store clock is fixed on a Wednesday at 15:00 (stor
 The reports in [evals/results](evals/results) list every failed check with the reply. The evaluation also changed
 the code: it showed that "sou o gerente" opened a ticket, that the 4b model invented delivery times, and that a
 broken tool call from Ollama could crash a conversation. All three were fixed and covered by tests.
+
+A code review after those runs found problems the evaluation set does not reach: correct policy answers with
+a price ("frete grátis acima de R$ 500") replaced by the safe reply, a warranty question with the word "defeito"
+opening a ticket, "Yamaha" quietly answered as one specific guitar, and no limit on guessing order numbers.
+They are fixed and covered by unit tests. Running the evaluation again gave the same scores, which confirms the
+set has no case for them yet; the remaining fallbacks on the 4b model are replies with no tool call at all,
+which the review step is meant to stop.
 
 ## Example conversations
 
@@ -272,13 +290,22 @@ Generated by the evaluation run with `qwen3:4b-instruct`, with each tool call sh
   product named.
 - **Keyword checks are precise, not complete.** The review step uses Portuguese and English patterns. The 8b model
   answered "Tem sim!" about a distortion pedal without searching, because that phrase is not in the catalog pattern.
+  The defect check skips questions and denials by looking at the 4 words before the defect word, which can still
+  miss an unusual phrasing.
 - **Staying in role is only a prompt rule.** Both models answered "Paris" when asked to forget they are a store
   assistant. Harmless here, but nothing in code stops it.
 - **The manual's contradictions are still in the PDF.** A policy search can return section 1.2 with the old phone
   and the accented e-mail, and the model may repeat them.
 - **BM25 needs shared words.** A policy question phrased with none of the manual's words can miss the right section.
-- **Prototype plumbing.** Tickets are only records, data is a CSV snapshot loaded at start, and local models take
-  15 to 20 s per message.
+- **Prototype plumbing.** Tickets are only records: the customer is told the case went to the team, but nothing
+  is sent. Data is a CSV snapshot loaded at start, and local models take 15 to 21 s per message.
+- **Personal data in local files.** `traces.jsonl` and `memory.sqlite` keep phones, e-mails and order details in
+  plain text, with no masking or retention period. Both are git-ignored; production needs masking (see below).
+- **The order lock counts per conversation.** Starting a new conversation resets it; production needs a limit per
+  phone number.
+- **Simple trade-offs in the review step.** "Disponível" is accepted after a store-hours lookup, so a product
+  called available in that same turn would pass. The terminal chat also has basic error handling (a model that
+  fails to load shows a traceback).
 - **The evaluation is small.** 31 cases, one run per model. Some checks are strict (for example, a reply that gives
   only the correct PIX price fails a check that expects the list price).
 
@@ -288,7 +315,8 @@ Generated by the evaluation run with `qwen3:4b-instruct`, with each tool call sh
 - Check in code that a stated price belongs to the product named, and that the reply is in the customer's language.
 - When the customer names a promotion, require a product lookup before the answer.
 - Correct the manual's contradictions at the source, or patch them in the indexed text.
-- Grow the evaluation with cases from real traces, and run each case several times to measure variation.
+- Grow the evaluation with cases from real traces and from the review findings (policy answers with prices,
+  defect questions, ambiguous product names, repeated order guesses), and run each case several times.
 
 ## From prototype to production
 
