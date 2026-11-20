@@ -317,8 +317,8 @@ I used **Claude Code** (Claude, in the Claude desktop app) throughout the projec
   rules, tools, policies, agent, CLI, evaluation, README). I also looked at Artefact's published cases to decide
   what a client would expect: KPIs, hand-off to people, monitoring and a path to production.
 - **Building.** A first version written entirely by the assistant was discarded: I restarted from scratch so I
-  would understand every part. From then on, I typed the code myself in VS Code 
-  each step, ran the tests and tried it in the chat before committing. Each phase is a separate commit.
+  would understand every part. From then on, I typed the code myself in VS Code, ran the tests and tried it in
+  the chat before committing. Each phase is a separate commit.
 - **Testing and fixing.** Chatting with the agent, I found bugs (an empty search filter crashed, a customer's own
   budget was blocked as an invented price) that became fixes and tests. Claude ran the evaluation, and I chose
   which findings to fix and which to document as limitations.
