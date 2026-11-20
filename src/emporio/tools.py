@@ -24,6 +24,8 @@ MAX_ALTERNATIVES = 3
 FUZZY_MATCH_THRESHOLD = 0.6
 MIN_PHONE_DIGITS = 8
 ORDER_NOT_FOUND = "Não encontrei um pedido com esse número e esse contato."
+# Order numbers are sequential, so failed checks are capped per conversation (LGPD).
+MAX_FAILED_VERIFICATIONS = 3
 RETURN_POLICY_SECTIONS = ["4.1", "4.2", "4.3", "4.4", "8.1"]
 
 STORE_WHATSAPP = "(67) 3321-4500"  # policy 7
@@ -32,6 +34,12 @@ COMPLAINT_RESPONSE_TIME = "até 24 horas úteis"  # policy 7.3
 OPEN_RESPONSE_TIME = "ainda hoje, durante o expediente"
 CLOSED_RESPONSE_TIME = "a partir da próxima abertura da loja"
 COMPLAINT_REASONS = frozenset({"complaint", "defect"})
+ORDER_LOOKUP_LOCKED = {
+    "verified": False,
+    "locked": True,
+    "message": "Muitas tentativas sem sucesso. Por segurança, não consulto mais pedidos nesta conversa. "
+    f"O cliente pode falar com a equipe pelo WhatsApp {STORE_WHATSAPP}.",
+}
 ESCALATION_REASONS = {
     "complaint": "reclamação",
     "defect": "produto com defeito",
@@ -132,20 +140,24 @@ def search_products(
     return response
 
 
-def _find_product(data: StoreData, name_or_id: str) -> pd.Series | None:
+def _find_products(data: StoreData, name_or_id: str) -> tuple[pd.DataFrame, bool]:
+    """Products that fit the name or id (none, one or several), and whether only a similar name matched."""
     products = data.products
     if str(name_or_id).strip().isdigit():
-        hit = products[products["product_id"] == int(name_or_id)]
-        return hit.iloc[0] if not hit.empty else None
+        return products[products["product_id"] == int(name_or_id)], False
     matched = _where_matches(products, "search_text", name_or_id)
-    if not matched.empty:
-        return matched.iloc[0]
+    exact = matched[matched["name"].map(normalize_text) == normalize_text(name_or_id)]
+    # "Martin D-28" is the D-28, not the D-28E: whole-word matches win over partial ones.
+    whole_words = matched[matched["name"].map(lambda name: _tokens(name_or_id) <= _tokens(name)).astype(bool)]
+    for candidates in (exact, whole_words, matched):
+        if not candidates.empty:
+            return candidates, False
     query = normalize_text(name_or_id)
     scores = products["name"].map(
         lambda name: SequenceMatcher(None, query, normalize_text(name)).ratio()
     )
     best = scores.idxmax()
-    return products.loc[best] if scores[best] >= FUZZY_MATCH_THRESHOLD else None
+    return (products.loc[[best]] if scores[best] >= FUZZY_MATCH_THRESHOLD else products.iloc[0:0]), True
 
 
 def _alternatives(data: StoreData, row: pd.Series) -> list[dict]:
@@ -162,11 +174,21 @@ def _alternatives(data: StoreData, row: pd.Series) -> list[dict]:
 
 
 def get_product_details(data: StoreData, name_or_id: str) -> dict:
-    row = _find_product(data, name_or_id)
-    if row is None:
+    matches, similar_name_only = _find_products(data, name_or_id)
+    if matches.empty:
         return {"found": False, "message": f"Nenhum produto encontrado para '{name_or_id}'."}
+    if len(matches) > 1:
+        return {
+            "found": False,
+            "ambiguous": True,
+            "message": f"Mais de um produto corresponde a '{name_or_id}'. Pergunte ao cliente qual deles.",
+            "candidates": [_product_summary(data, r) for _, r in matches.head(MAX_RESULTS).iterrows()],
+        }
+    row = matches.iloc[0]
     details = _product_summary(data, row)
     details.update(found=True, description=row["description"], specs=row["specs"])
+    if similar_name_only:
+        details["note"] = f"Nome mais parecido com '{name_or_id}'. Confirme com o cliente se é este produto."
     details["max_installments"] = rules.installment_options(_card_price(details))[-1]
 
     promotions = data.all_promotions

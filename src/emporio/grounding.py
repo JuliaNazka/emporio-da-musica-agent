@@ -20,27 +20,34 @@ PRICE_VALUE = re.compile(r"R\$\s*(\d[\d.,]*\d|\d)")
 NUMBER = re.compile(r"\d+(?:\.\d+)?")
 PRICE_TOLERANCE = 0.01
 STOCK = re.compile(r"\b(em estoque|sem estoque|esgotad[oa]s?|unidades? dispon[ií]ve(l|is)|in stock|out of stock)\b", re.IGNORECASE)
-# Saying the store has (or lacks) a product is store data too: the model must look it up first.
-CATALOG = re.compile(
-    r"\b(n[aã]o temos|temos (o|a|os|as|um|uma)|cat[aá]logo|dispon[ií]ve(l|is)|we (do not|don't) (have|sell))\b",
-    re.IGNORECASE,
+# Saying the store has a product is store data too: the model must look it up first.
+HAS_PRODUCT = re.compile(r"(?<!n[aã]o )\btemos (o|a|os|as|um|uma)\b", re.IGNORECASE)
+AVAILABLE = re.compile(r"\bdispon[ií]ve(l|is)\b", re.IGNORECASE)
+# "We don't sell strings" can come from the catalog or from the manual (policy 7.1).
+DOES_NOT_SELL = re.compile(
+    r"\b(n[aã]o (temos|vendemos|trabalhamos)|cat[aá]logo|we (do not|don't) (have|sell))\b", re.IGNORECASE
 )
 # Delivery times come from get_shipping_quote, an order lookup or the policy manual, never from memory.
 DELIVERY = re.compile(
     r"\b(dias? [uú]t(il|eis)|business days?|prazo de entrega|delivery (time|takes)|(chega|entrega\w*) em \d+)\b",
     re.IGNORECASE,
 )
-DELIVERY_TOOLS = DATA_TOOLS | {"search_policies"}
+POLICY_TOOLS = frozenset({"search_policies"})
+# Each kind of claim and the tools that can back it. A price must also match a number in the results.
+CLAIM_SOURCES = (
+    (PRICE, DATA_TOOLS | POLICY_TOOLS),
+    (STOCK, DATA_TOOLS),
+    (HAS_PRODUCT, DATA_TOOLS),
+    (AVAILABLE, DATA_TOOLS | {"get_store_status"}),
+    (DOES_NOT_SELL, DATA_TOOLS | POLICY_TOOLS),
+    (DELIVERY, DATA_TOOLS | POLICY_TOOLS),
+)
 GROUNDING_REMINDER = (
     "[internal check] Your last answer stated prices, stock, delivery times or what the store sells without "
     "a matching tool result in this turn. Call the tool that has that data first (search_products or "
     "get_product_details for products, get_shipping_quote for delivery), then answer using only what it "
     "returns, in the customer's language."
 )
-
-
-def mentions_store_data(answer: str) -> bool:
-    return bool(PRICE.search(answer) or STOCK.search(answer) or CATALOG.search(answer))
 
 
 def _to_number(raw: str) -> float:
@@ -69,10 +76,8 @@ def unsupported_prices(answer: str, tool_results: list[str], customer_text: str 
 def needs_grounding(
     answer: str, tools_used: set[str], tool_results: list[str] | None = None, customer_text: str = ""
 ) -> bool:
-    if DELIVERY.search(answer) and not tools_used & DELIVERY_TOOLS:
+    if any(pattern.search(answer) and not tools_used & sources for pattern, sources in CLAIM_SOURCES):
         return True
-    if not mentions_store_data(answer):
-        return False
-    if not tools_used & DATA_TOOLS:
-        return True
-    return tool_results is not None and bool(unsupported_prices(answer, tool_results, customer_text))
+    if PRICE.search(answer) and tool_results is not None:
+        return bool(unsupported_prices(answer, tool_results, customer_text))
+    return False

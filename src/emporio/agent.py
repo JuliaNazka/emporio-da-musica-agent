@@ -7,7 +7,7 @@ import logging
 import os
 from collections.abc import Callable
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -16,7 +16,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, MessagesState, StateGraph
-from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt import InjectedState, ToolNode
 
 from emporio import policies, rules, tools
 from emporio.data import DEFAULT_DATA_DIR, StoreData, load_store_data
@@ -37,6 +37,9 @@ FALLBACK_ANSWER = (
     "ou, se preferir, falar com a nossa equipe pelo WhatsApp " + tools.STORE_WHATSAPP + "."
 )
 EscalationReason = Literal["complaint", "defect", "policy_doubt", "customer_request", "unresolved"]
+ORDER_TOOLS = frozenset({"get_order_status", "check_return_options"})
+# The conversation so far, passed in by LangGraph and hidden from the model's view of the tool.
+Conversation = Annotated[list[BaseMessage], InjectedState("messages")]
 
 
 def _as_json(result: dict) -> str:
@@ -45,6 +48,13 @@ def _as_json(result: dict) -> str:
 
 def _store_now() -> datetime:
     return datetime.now(rules.STORE_TZ)
+
+
+def _lookups_locked(messages: list[BaseMessage]) -> bool:
+    failed = sum(
+        isinstance(m, ToolMessage) and m.name in ORDER_TOOLS and '"verified": false' in m.text for m in messages
+    )
+    return failed >= tools.MAX_FAILED_VERIFICATIONS
 
 
 def build_tools(data: StoreData, index: PolicyIndex, clock: Callable[[], datetime] = _store_now) -> list[BaseTool]:
@@ -72,15 +82,19 @@ def build_tools(data: StoreData, index: PolicyIndex, clock: Callable[[], datetim
         return _as_json(tools.list_active_promotions(data))
 
     @tool
-    def get_order_status(order_id: int, phone_or_email: str) -> str:
+    def get_order_status(order_id: int, phone_or_email: str, messages: Conversation) -> str:
         """Status, items, total and tracking of an order. Needs the order number and the phone or
         e-mail used in the purchase."""
+        if _lookups_locked(messages):
+            return _as_json(tools.ORDER_LOOKUP_LOCKED)
         return _as_json(tools.get_order_status(data, order_id, phone_or_email))
 
     @tool
-    def check_return_options(order_id: int, phone_or_email: str) -> str:
+    def check_return_options(order_id: int, phone_or_email: str, messages: Conversation) -> str:
         """Which return, exchange and warranty windows are still open for an order. Needs the order
         number and the phone or e-mail used in the purchase."""
+        if _lookups_locked(messages):
+            return _as_json(tools.ORDER_LOOKUP_LOCKED)
         return _as_json(tools.check_return_options(data, order_id, phone_or_email, today=clock().date()))
 
     @tool
@@ -140,7 +154,7 @@ def load_model() -> BaseChatModel:
 
 
 def _is_customer(message: BaseMessage) -> bool:
-    return isinstance(message, HumanMessage) and message.content not in INTERNAL_REMINDERS
+    return isinstance(message, HumanMessage) and message.text not in INTERNAL_REMINDERS
 
 
 def _current_turn(messages: list[BaseMessage]) -> tuple[HumanMessage | None, list[BaseMessage]]:
@@ -203,6 +217,8 @@ def build_agent(
         if needs_grounding(answer.text, tools_used, tool_results, customer_text):
             if retries < MAX_RETRIES:
                 return {"messages": [RemoveMessage(id=answer.id), HumanMessage(GROUNDING_REMINDER)]}
+            if needs_escalation(customer_text, tools_used):
+                return {"messages": [RemoveMessage(id=answer.id), *hand_off(customer_text)]}
             return {"messages": [RemoveMessage(id=answer.id), AIMessage(FALLBACK_ANSWER)]}
         if needs_escalation(customer_text, tools_used):
             if retries < MAX_RETRIES:

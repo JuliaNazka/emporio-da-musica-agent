@@ -207,3 +207,43 @@ def test_model_error_on_a_person_request_still_reaches_the_team(data, index):
     messages = agent.invoke({"messages": [HumanMessage("Quero falar com um atendente")]})["messages"]
     tools_called = [m.name for m in messages if isinstance(m, ToolMessage)]
     assert tools_called == ["escalate_to_human"]
+
+
+def test_policy_and_hours_answers_are_backed_by_their_tools():
+    # Found in review: correct policy answers were being replaced by the fallback.
+    policy = ['{"section": "5.1", "text": "Frete grátis para pedidos acima de R$ 500,00."}']
+    assert not needs_grounding("Frete grátis acima de R$ 500 (seção 5.1).", {"search_policies"}, policy)
+    assert needs_grounding("Frete grátis acima de R$ 400.", {"search_policies"}, policy)
+    assert not needs_grounding("Não vendemos cordas, só instrumentos (seção 7.1).", {"search_policies"}, [])
+    assert not needs_grounding("O atendimento está disponível até as 18h.", {"get_store_status"}, [])
+    assert needs_grounding("O Yamaha C40 está disponível!", set(), [])
+
+
+def test_defect_questions_and_denials_are_not_reports():
+    assert escalation_reason("Qual a garantia se o violão tiver defeito?") is None
+    assert escalation_reason("Caso chegue quebrado, o que eu faço?") is None
+    assert escalation_reason("O violão não tem defeito nenhum, só quero trocar a cor") is None
+    assert escalation_reason("O braço se quebrou na primeira semana") == "defect"
+    assert escalation_reason("Chegou com o tampo trincado no pedido 5") == "defect"
+
+
+def test_complaint_still_reaches_the_team_when_the_answer_cannot_be_grounded(data, index):
+    messages = run(data, index, [AIMessage("Custa R$ 1.999,00."), AIMessage("Custa R$ 1.999,00.")], question=COMPLAINT)
+    assert any(isinstance(m, ToolMessage) and m.name == "escalate_to_human" for m in messages)
+    assert messages[-1].content != FALLBACK_ANSWER
+
+
+def test_order_lookups_lock_after_three_failed_checks(data, index):
+    wrong = {"order_id": 8, "phone_or_email": "(67) 90000-0000"}
+    script = [tool_call("get_order_status", wrong) for _ in range(4)] + [AIMessage("Não consegui verificar.")]
+    for number, message in enumerate(script[:4]):
+        message.tool_calls[0]["id"] = f"call_{number}"
+    messages = run(data, index, script, question="status do pedido 8")
+    results = [m.content for m in messages if isinstance(m, ToolMessage)]
+    assert all('"verified": false' in r for r in results)
+    assert '"locked": true' in results[3] and '"locked"' not in results[2]
+
+
+def test_the_model_does_not_see_the_conversation_argument(data, index):
+    order_tool = next(t for t in build_tools(data, index) if t.name == "get_order_status")
+    assert set(order_tool.tool_call_schema.model_json_schema()["properties"]) == {"order_id", "phone_or_email"}

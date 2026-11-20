@@ -135,3 +135,24 @@ def test_empty_search_within_budget_shows_the_cheapest_above_it(data):
 
 def test_search_with_no_word_match_and_a_category_returns_nothing(data):
     assert tools.search_products(data, query="xyzzy", category="violões")["total_found"] == 0
+
+
+def test_a_brand_alone_lists_the_candidates(data):
+    details = tools.get_product_details(data, "Yamaha")
+    assert details["ambiguous"] and not details["found"]
+    assert len(details["candidates"]) > 1
+
+
+def test_exact_name_wins_over_partial_matches(data):
+    details = tools.get_product_details(data, "Yamaha C40 Nylon Natural")
+    assert details["found"] and "note" not in details
+
+
+def test_similar_name_is_flagged_for_confirmation(data):
+    details = tools.get_product_details(data, "Takamine GD-20 Natural")
+    assert not details["found"] or "note" in details or details["name"].startswith("Takamine GD20")
+
+
+def test_model_code_does_not_match_a_longer_code(data):
+    assert tools.get_product_details(data, "Martin D-28")["name"] == "Martin D-28 Dreadnought Natural"
+    assert tools.get_product_details(data, "Martin D-28E")["name"] == "Martin D-28E Elétrico Aço Natural"

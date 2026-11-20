@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 DEFECT = re.compile(
-    r"\b(defeit\w*|trincad\w*|quebrad\w*|rachad\w*|riscad\w*|amassad\w*|danificad\w*|"
+    r"\b(defeit\w*|trinc(ad|ou)\w*|quebr(ad|ou)\w*|rach(ad|ou)\w*|riscad\w*|amassad\w*|danificad\w*|"
     r"n[aã]o (funciona|liga)|broken|cracked|defect\w*)\b",
     re.IGNORECASE,
 )
@@ -21,6 +21,14 @@ PERSON = re.compile(
     re.IGNORECASE,
 )
 COMPLAINT = re.compile(r"\b(reclama\w*|procon|absurdo|insatisfeit\w*|complain\w*)\b", re.IGNORECASE)
+# "Se o violão tiver defeito, qual a garantia?" or "não tem defeito" is not a defect report.
+# Only "se" followed by a subject or a verb: "o braço se quebrou" is still a report.
+NOT_A_REPORT = re.compile(
+    r"\b(se (o|a|os|as|meu|minha|eu|ele|ela|tiver|vier|chegar|der|estiver)|caso|e se|if|in case|"
+    r"n[aã]o|nenhum|nenhuma|sem|not|without)\b",
+    re.IGNORECASE,
+)
+WORDS_BEFORE = 4
 
 ESCALATION_TOOL = "escalate_to_human"
 ESCALATION_REMINDER = (
@@ -30,8 +38,16 @@ ESCALATION_REMINDER = (
 )
 
 
+def reports_defect(customer_text: str) -> bool:
+    for match in DEFECT.finditer(customer_text):
+        words_before = " ".join(customer_text[: match.start()].split()[-WORDS_BEFORE:])
+        if not NOT_A_REPORT.search(words_before):
+            return True
+    return False
+
+
 def escalation_reason(customer_text: str) -> str | None:
-    if DEFECT.search(customer_text):
+    if reports_defect(customer_text):
         return "defect"
     if PERSON.search(customer_text):
         return "customer_request"
